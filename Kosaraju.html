@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kosaraju's Algorithm: Breaking the Bridges</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            background-color: #121212;
+            color: #e0e0e0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+        }
+        #main-container {
+            position: relative;
+            width: 98%;
+            height: 98%;
+            background-color: #1e1e1e;
+            border-radius: 15px;
+            box-shadow: 0 0 25px rgba(0, 0, 0, 0.6 );
+        }
+        svg {
+            width: 100%;
+            height: 100%;
+            cursor: grab;
+        }
+        svg:active {
+            cursor: grabbing;
+        }
+        .controls {
+            position: absolute;
+            top: 20px;
+            left: 25px;
+            display: flex;
+            gap: 12px;
+            z-index: 10;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            font-weight: 600;
+            border: 2px solid #03dac6;
+            border-radius: 8px;
+            cursor: pointer;
+            background-color: transparent;
+            color: #03dac6;
+            transition: all 0.3s ease;
+            letter-spacing: 0.5px;
+        }
+        button:hover:not(:disabled) {
+            background-color: #03dac6;
+            color: #121212;
+            box-shadow: 0 0 15px #03dac6;
+        }
+        button:disabled {
+            border-color: #444;
+            color: #444;
+            cursor: not-allowed;
+        }
+        .status-panel {
+            position: absolute;
+            bottom: 20px;
+            left: 25px;
+            padding: 12px 18px;
+            background-color: rgba(0, 0, 0, 0.7);
+            border-radius: 8px;
+            font-size: 1.1em;
+            border: 1px solid #333;
+            z-index: 10;
+            max-width: 500px;
+        }
+        .stack-container {
+            position: absolute;
+            top: 20px;
+            right: 25px;
+            width: 180px;
+            height: 85%;
+            padding: 15px;
+            background-color: rgba(0, 0, 0, 0.7);
+            border-radius: 8px;
+            border: 1px solid #333;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+        }
+        .stack-container h3 {
+            margin: 0 0 15px 0;
+            text-align: center;
+            color: #bb86fc;
+            font-weight: 600;
+        }
+        #finish-stack {
+            flex-grow: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column-reverse;
+            align-items: center;
+            gap: 8px;
+        }
+        .stack-item {
+            background-color: #373737;
+            border: 1px solid #555;
+            color: #e0e0e0;
+            padding: 5px 10px;
+            border-radius: 5px;
+            width: 60px;
+            text-align: center;
+            font-weight: bold;
+            transition: all 0.2s ease;
+            cursor: default;
+        }
+        .stack-item:hover {
+            background-color: #bb86fc;
+            color: #121212;
+            transform: scale(1.1);
+        }
+        .link {
+            stroke-opacity: 0.6;
+            stroke-width: 1.5px;
+            transition: stroke 0.5s ease;
+        }
+        .node circle {
+            stroke: #fff;
+            stroke-width: 1.5px;
+            transition: r 0.3s ease;
+        }
+        .node text {
+            fill: #fff;
+            font-size: 12px;
+            pointer-events: none;
+            text-anchor: middle;
+            dominant-baseline: central;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="main-container">
+        <svg id="svg"></svg>
+        <div class="controls">
+            <button id="startBtn">Start</button>
+            <button id="resetBtn">Reset</button>
+        </div>
+        <div class="status-panel" id="status-panel">Click "Start" to see how reversing the graph isolates the hidden communities.</div>
+        <div class="stack-container">
+            <h3>Finish Order Stack</h3>
+            <div id="finish-stack"></div>
+        </div>
+    </div>
+
+<script>
+    // --- D3 Setup ---
+    const svg = d3.select("svg");
+    const width = +svg.node().getBoundingClientRect().width;
+    const height = +svg.node().getBoundingClientRect().height;
+    
+    // --- UI Elements ---
+    const startBtn = document.getElementById('startBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const statusPanel = document.getElementById('status-panel');
+    const finishStackDiv = document.getElementById('finish-stack');
+
+    // --- Config ---
+    const NUM_NODES = 100;
+    const NUM_SCCS = 5; // Number of communities
+    const ANIMATION_SPEED = 120;
+    const SCC_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"];
+
+    let nodesData, linksData, simulation, adjList, sccAssignments;
+    let isRunning = false;
+    let zoomGroup, linkElements, nodeElements;
+    
+    // --- Graph Generation: DAG of SCCs ---
+    function generateDagOfSccs() {
+        const nodes = d3.range(NUM_NODES).map(i => ({ id: i, scc: -1 }));
+        const links = new Set();
+        
+        // Assign nodes to communities
+        sccAssignments = nodes.map(n => Math.floor(Math.random() * NUM_SCCS));
+        const communityNodes = Array.from({ length: NUM_SCCS }, () => []);
+        nodes.forEach(n => communityNodes[sccAssignments[n.id]].push(n.id));
+
+        // 1. Create dense, strongly connected communities
+        communityNodes.forEach(community => {
+            if (community.length < 2) return;
+            for (let i = 0; i < community.length * 1.5; i++) {
+                const source = community[Math.floor(Math.random() * community.length)];
+                const target = community[Math.floor(Math.random() * community.length)];
+                if (source !== target) {
+                    links.add(`${source},${target}`);
+                }
+            }
+        });
+
+        // 2. Create ONE-WAY "bridge" links between communities to form a DAG
+        // e.g., SCC 0 -> SCC 1, SCC 1 -> SCC 2, etc.
+        for (let i = 0; i < NUM_SCCS - 1; i++) {
+            const sourceScc = i;
+            const targetScc = i + 1;
+            
+            if (communityNodes[sourceScc].length === 0 || communityNodes[targetScc].length === 0) continue;
+
+            // Create a few one-way links from the source community to the target community
+            for (let j = 0; j < 3; j++) {
+                const sourceNode = communityNodes[sourceScc][Math.floor(Math.random() * communityNodes[sourceScc].length)];
+                const targetNode = communityNodes[targetScc][Math.floor(Math.random() * communityNodes[targetScc].length)];
+                links.add(`${sourceNode},${targetNode}`);
+            }
+        }
+        // Add a few more random one-way links for complexity, but respecting the DAG order
+        for (let i = 0; i < NUM_SCCS; i++) {
+             const sourceScc = Math.floor(Math.random() * (NUM_SCCS -1));
+             const targetScc = sourceScc + 1 + Math.floor(Math.random() * (NUM_SCCS - sourceScc - 1));
+             if (targetScc >= NUM_SCCS || communityNodes[sourceScc].length === 0 || communityNodes[targetScc].length === 0) continue;
+             const sourceNode = communityNodes[sourceScc][Math.floor(Math.random() * communityNodes[sourceScc].length)];
+             const targetNode = communityNodes[targetScc][Math.floor(Math.random() * communityNodes[targetScc].length)];
+             links.add(`${sourceNode},${targetNode}`);
+        }
+
+
+        const uniqueLinks = Array.from(links).map(s => {
+            const [source, target] = s.split(',').map(Number);
+            // Add a property to identify inter-community links
+            const isBridge = sccAssignments[source] !== sccAssignments[target];
+            return { source, target, isBridge };
+        });
+
+        const adj = new Map(nodes.map(n => [n.id, []]));
+        uniqueLinks.forEach(link => adj.get(link.source).push(link.target));
+
+        return { nodes, links: uniqueLinks, adj };
+    }
+    
+    // --- D3 Drawing & Update ---
+    function initializeVisuals() {
+        simulation = d3.forceSimulation(nodesData)
+            .force("link", d3.forceLink(linksData).id(d => d.id).distance(60).strength(0.7))
+            .force("charge", d3.forceManyBody().strength(-110))
+            .force("center", d3.forceCenter(width / 2, height / 2));
+
+        svg.html('');
+        
+        svg.append('defs').append('marker')
+            .attr('id', 'arrowhead')
+            .attr('viewBox', '-0 -5 10 10')
+            .attr('refX', 18)
+            .attr('refY', 0)
+            .attr('orient', 'auto')
+            .attr('markerWidth', 5)
+            .attr('markerHeight', 5)
+            .append('svg:path')
+            .attr('d', 'M 0,-5 L 10 ,0 L 0,5')
+            .attr('fill', '#999')
+            .style('stroke','none');
+
+        zoomGroup = svg.append("g");
+
+        linkElements = zoomGroup.append("g").attr("class", "links")
+            .selectAll("path")
+            .data(linksData, d => `${d.source.id}-${d.target.id}`)
+            .enter().append("path")
+            .attr("class", "link")
+            .attr("stroke", d => d.isBridge ? "#ff8f00" : "#999") // Highlight bridge links initially
+            .attr('marker-end', 'url(#arrowhead)');
+
+        nodeElements = zoomGroup.append("g").attr("class", "nodes")
+            .selectAll("g")
+            .data(nodesData)
+            .enter().append("g")
+            .attr("class", "node")
+            .attr("id", d => `node-${d.id}`);
+
+        nodeElements.append("circle")
+            .attr("r", 9)
+            .attr("fill", "#03dac6");
+        
+        nodeElements.append("text")
+            .text(d => d.id);
+
+        simulation.on("tick", () => {
+            linkElements.attr("d", d => `M${d.source.x},${d.source.y} L${d.target.x},${d.target.y}`);
+            nodeElements.attr("transform", d => `translate(${d.x},${d.y})`);
+        });
+
+        const zoom = d3.zoom().scaleExtent([0.1, 5]).on("zoom", (event) => {
+            zoomGroup.attr("transform", event.transform);
+        });
+        svg.call(zoom);
+    }
+
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    // --- Kosaraju's Algorithm with Enhanced Animation ---
+    async function kosaraju() {
+        isRunning = true;
+        startBtn.disabled = true;
+        resetBtn.disabled = true;
+
+        // --- Step 1: First DFS on original graph ---
+        statusPanel.innerHTML = "<strong>Phase 1:</strong> Exploring the network. The orange links are one-way bridges between communities.";
+        const finishOrder = [];
+        let visited = new Set();
+        
+        async function dfs1(u) {
+            visited.add(u);
+            d3.select(`#node-${u} circle`).transition().duration(ANIMATION_SPEED).attr("fill", "#fdd835").attr("r", 12);
+            await sleep(ANIMATION_SPEED);
+
+            for (const v of adjList.get(u) || []) {
+                if (!visited.has(v)) {
+                    await dfs1(v);
+                }
+            }
+            
+            finishOrder.push(u);
+            d3.select(`#node-${u} circle`).transition().duration(ANIMATION_SPEED).attr("fill", "#4caf50").attr("r", 9);
+            
+            const stackItem = document.createElement('div');
+            stackItem.classList.add('stack-item');
+            stackItem.textContent = u;
+            stackItem.id = `stack-item-${u}`;
+            stackItem.onmouseenter = () => d3.select(`#node-${u} circle`).attr("r", 14).style("stroke", "#bb86fc");
+            stackItem.onmouseleave = () => d3.select(`#node-${u} circle`).attr("r", 9).style("stroke", "#fff");
+            finishStackDiv.prepend(stackItem);
+            await sleep(ANIMATION_SPEED / 2);
+        }
+
+        for (const node of nodesData) {
+            if (!visited.has(node.id)) {
+                await dfs1(node.id);
+            }
+        }
+        await sleep(ANIMATION_SPEED * 5);
+
+        // --- Step 2: Reverse the graph ---
+        statusPanel.innerHTML = "<strong>Phase 2:</strong> Reversing all links. Watch the orange bridges! They now flow inward, trapping the communities.";
+        
+        const reverseAdj = new Map(nodesData.map(n => [n.id, []]));
+        linksData.forEach(link => reverseAdj.get(link.target.id).push(link.source.id));
+        
+        // Make the bridge links fade out, as they are no longer escape paths
+        linkElements.filter(d => d.isBridge)
+            .transition().duration(1000)
+            .attr("stroke", "#444") // Fade to a dark color
+            .style("stroke-opacity", 0.3);
+
+        linkElements.filter(d => !d.isBridge)
+            .transition().duration(1000)
+            .attr("stroke", "#f44336"); // Internal links turn red
+
+        d3.select('marker path').transition().duration(1000).attr('fill', '#f44336');
+        await sleep(1200);
+        
+        linksData = linksData.map(l => ({source: l.target, target: l.source, isBridge: l.isBridge}));
+        
+        linkElements.data(linksData, d => `${d.source.id}-${d.target.id}`).attr("d", d => `M${d.source.x},${d.source.y} L${d.target.x},${d.target.y}`);
+        simulation.force("link").links(linksData);
+        simulation.alpha(0.3).restart();
+        
+        d3.selectAll(".node circle").transition().duration(ANIMATION_SPEED).attr("fill", "#03dac6");
+        await sleep(ANIMATION_SPEED * 5);
+        
+        // --- Step 3: Second DFS on reversed graph ---
+        statusPanel.innerHTML = "<strong>Phase 3:</strong> Now, the algorithm can't cross the broken bridges. Each search perfectly isolates one community.";
+        visited = new Set();
+        let sccCount = 0;
+        
+        const sccCenters = new Map();
+        for (let i = 0; i < NUM_SCCS; i++) {
+            const angle = (i / NUM_SCCS) * 2 * Math.PI;
+            sccCenters.set(i, {
+                x: width / 2 + (width / 2.8) * Math.cos(angle),
+                y: height / 2 + (height / 2.8) * Math.sin(angle)
+            });
+        }
+
+        simulation.force("x", d3.forceX(d => sccCenters.get(d.scc)?.x || width/2).strength(d => d.scc !== -1 ? 0.4 : 0.01))
+                  .force("y", d3.forceY(d => sccCenters.get(d.scc)?.y || height/2).strength(d => d.scc !== -1 ? 0.4 : 0.01));
+
+        async function dfs2(u, currentSccId) {
+            visited.add(u);
+            nodesData[u].scc = currentSccId;
+            d3.select(`#node-${u} circle`).transition().duration(ANIMATION_SPEED).attr("fill", SCC_COLORS[currentSccId]);
+            await sleep(ANIMATION_SPEED);
+
+            for (const v of reverseAdj.get(u) || []) {
+                if (!visited.has(v)) {
+                    await dfs2(v, currentSccId);
+                }
+            }
+        }
+        
+        while (finishOrder.length > 0) {
+            const u = finishOrder.pop();
+            
+            const itemToRemove = document.getElementById(`stack-item-${u}`);
+            if (itemToRemove) {
+                itemToRemove.style.backgroundColor = '#bb86fc';
+                itemToRemove.style.color = '#121212';
+                await sleep(ANIMATION_SPEED * 2);
+                itemToRemove.remove();
+            }
+
+            if (!visited.has(u)) {
+                statusPanel.innerHTML = `Popping node <strong>${u}</strong>... and finding a new, isolated community.`;
+                await dfs2(u, sccCount);
+                sccCount++;
+                simulation.alpha(0.6).restart();
+                await sleep(ANIMATION_SPEED * 3);
+            }
+        }
+
+        statusPanel.innerHTML = "<strong>Success!</strong> By reversing the one-way bridges, the communities were perfectly separated and then identified.";
+        isRunning = false;
+        resetBtn.disabled = false;
+    }
+    
+    // --- Control Logic ---
+    function reset() {
+        if(isRunning) return;
+        const graphData = generateDagOfSccs();
+        nodesData = graphData.nodes;
+        linksData = graphData.links;
+        adjList = graphData.adj;
+        sccAssignments = graphData.sccAssignments;
+        finishStackDiv.innerHTML = '';
+        statusPanel.innerHTML = "Click 'Start' to see how reversing the graph isolates the hidden communities.";
+        startBtn.disabled = false;
+        initializeVisuals();
+    }
+    
+    startBtn.addEventListener('click', () => {
+        if (!isRunning) {
+            kosaraju();
+        }
+    });
+    
+    resetBtn.addEventListener('click', reset);
+    
+    // Initial load
+    reset();
+
+</script>
+</body>
+</html>
