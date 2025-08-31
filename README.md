@@ -4,7 +4,7 @@ An interactive and visually engaging web-based visualization of **Kosaraju's Alg
 
 Built with **D3.js**, this project goes beyond a plain algorithm demo — it presents a **narrative journey** of uncovering hidden communities inside complex networks, helping users understand not just *how* the algorithm works, but also *why*.  
 
-![demo](demo.png)
+![demo](demoww.png)
 
 ---
 
